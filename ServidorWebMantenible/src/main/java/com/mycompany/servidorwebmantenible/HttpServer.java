@@ -12,7 +12,6 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -72,6 +71,13 @@ public class HttpServer {
         return DEFAULT_PORT;
     }
     
+    /**
+     * Obtiene el puerto desde el argumento de línea de comandos.
+     * 
+     * @param args argumentos de línea de comandos
+     * @return el puerto si es un número válido, o null si
+     *  no se pasó ningún argumento o el valor no es numérico
+     */
     private static Integer parsePortArg(String[] args){
         if(args.length == 0) {
             return null;
@@ -83,7 +89,11 @@ public class HttpServer {
             return null;
         }
     }
-    
+    /**
+     * Intenta obtener el puerto desde la variable de entorno
+     * @return el puerto si la variable existe y es un número válidoo, o null 
+     * si no está definida o su valor no es numérico
+     */
     private static Integer parsePortEnv() {
         String envPort = System.getenv("PORT");
         if (envPort == null) {
@@ -96,82 +106,175 @@ public class HttpServer {
             return null;
         }
     }
-
+    
+    /**
+     * Coordina todo el proceso de una peticion del cliente, lee la solicitud, 
+     * ignora los encabezados, identifica el metodo, la ruta y los parametros
+     * @param clientSocket el socket de la conexión aceptada
+     * @throws IOException si ocurre un error de lectura o escritura en el socket
+     */
     private static void handleRequest(Socket clientSocket) throws IOException {
         BufferedReader in = new BufferedReader(
                 new InputStreamReader(clientSocket.getInputStream()));
-        OutputStream rawOut = new BufferedOutputStream(clientSocket.getOutputStream());
+        OutputStream out = new BufferedOutputStream(clientSocket.getOutputStream());
 
-        String requestLine = in.readLine();
+        String requestLine = readRequestLine(in);
         if (requestLine == null || requestLine.isEmpty()) {
             return;
         }
-        System.out.println("Request: " + requestLine);
+        
+        consumeHeaders(in);
+        
+        ParsedRequest request = parseRequestLine(requestLine, out);
+        if (request == null) {
+            return; 
+        }
+        
+        route(request, out);
 
-        // Consume el resto de encabezados hasta la línea en blanco (no nos interesa su contenido aquí)
+    }
+    
+    /**
+     * Lee la primera línea de la petición HTTP
+     *
+     * @param in el lector conectado al stream de entrada del cliente
+     * @return la línea de solicitud, o  null si la conexión no envió nada
+     * @throws IOException si ocurre un error de lectura
+     */
+    private static String readRequestLine(BufferedReader in)throws IOException {
+        String requestLine = in.readLine();
+        if (requestLine == null || requestLine.isEmpty()){
+            return null;
+        }
+        System.out.println("Request: " + requestLine);
+        return requestLine;
+    }
+    
+    /**
+     * Lee las líneas de los encabezados HTTP y las ignora hasta encontrar una 
+     * línea vacía. Los encabezados no se utilizan en este servidor.
+     *
+     * @param in el lector conectado al stream de entrada del cliente
+     * @throws IOException si ocurre un error de lectura
+     */
+    private static void consumeHeaders(BufferedReader in) throws IOException {
         String headerLine;
         while ((headerLine = in.readLine()) != null && !headerLine.isEmpty()) {
             // ignorado intencionalmente
         }
-
+    }
+    /**
+     * Analiza la línea de la petición para identificar el método HTTP, la ruta
+     * y los parámetros. Si la petición está mal escrita, no utiliza el método 
+     * GET o la dirección no es válida, envía un mensaje de error y detiene 
+     * el procesamiento.
+     * 
+     * @param requestLine la línea de solicitud 
+     * @param out el stream de salida por el que envia una respuesta de error
+     * @return la ruta y el query string,
+     * @throws IOException si ocurre un error al escribir la respuesta de error
+     */
+    private static ParsedRequest parseRequestLine(String requestLine, OutputStream out) throws IOException {
         String[] parts = requestLine.split(" ");
         if (parts.length < 2) {
-            sendError(rawOut, 400, "Bad Request");
-            return;
+            sendError(out, 400, "Bad Request");
+            return null;
         }
         String method = parts[0];
-        String rawUri = parts[1];
-
         if (!method.equals("GET")) {
-            sendError(rawOut, 405, "Method Not Allowed");
-            return;
+            sendError(out, 405, "Method Not Allowed");
+            return null;
         }
-
-        URI reqURI;
+        URI uri;
         try {
-            reqURI = new URI(rawUri);
+            uri = new URI(parts[1]);
         } catch (URISyntaxException e) {
-            sendError(rawOut, 400, "Bad Request");
-            return;
+            sendError(out, 400, "Bad Request");
+            return null;
         }
+        
+        return new ParsedRequest(uri.getPath(), uri.getQuery());
+    }
+    /**
+     * Decide cómo resolver la petición: primero intenta invocar una ruta
+     * dinámica registrada vía {@code get()}; si no existe ninguna para esta
+     * ruta, intenta servir un recurso estático.
+     *
+     * @param request la petición ya parseada (ruta y query string)
+     * @param out     el stream de salida por el que se enviará la respuesta
+     * @throws IOException si ocurre un error al escribir la respuesta
+     */
+    private static void route(ParsedRequest request, OutputStream out) throws IOException {
+        String result = ServidorWebMantenible.invoke(request.path());
 
-        String path = reqURI.getPath();
-        String query = reqURI.getQuery();
-        
-        String result = ServidorWebMantenible.invoke(path);
-        
-        if (result != null)
-        {
-            sendText(rawOut, result);
-        }else
-        {
-            handleStaticResource(rawOut, path);
+        if (result != null) {
+            sendText(out, result);
+        } else {
+            handleStaticResource(out, request.path());
         }
     }
     
     // Recursos estáticos
-
+     /**
+     * Intenta servir un archivo estático correspondiente a la ruta dada.
+     * Valida que la ruta sea segura (sin path traversal) antes de buscarla
+     * en el classpath.
+     *
+     * @param out  el stream de salida por el que se enviará la respuesta
+     * @param path la ruta solicitada (ej. {@code "/index.html"}, {@code "/images/logo.png"})
+     * @throws IOException si ocurre un error al leer el recurso o escribir la respuesta
+     */
     private static void handleStaticResource(OutputStream out, String path) throws IOException {
-        if (path == null || path.equals("/")) {
-            path = "/index.html";
-        }
+        String normalized = normalizePath(path);
 
-        // Normaliza y rechaza cualquier intento de salir del área pública (path traversal)
-        String normalized = java.nio.file.Paths.get(path).normalize().toString().replace("\\", "/");
-        if (normalized.contains("..") || !normalized.startsWith("/")) {
+        if (!isSafePath(normalized)) {
             sendError(out, 400, "Ruta inválida");
             return;
         }
 
-        String resourcePath = RESOURCE_ROOT + normalized;
+        byte[] content = readResource(normalized);
+        if (content == null) {
+            sendError(out, 404, "No encontrado: " + normalized);
+            return;
+        }
+
+        sendBytes(out, 200, "OK", contentTypeFor(normalized), content);
+    }
+     /**
+     * Organiza y corrige la ruta solicitada. Si el usuario pide /, la cambia 
+     * por /index.html. También elimina partes innecesarias de la ruta,
+     * como . o .., para obtener una dirección limpia y correcta.
+     *
+     * @param path la ruta original solicitada por el cliente
+     * @return la ruta normalizada, con separadores tipo 
+     */
+    private static String normalizePath(String path) {
+        String target = (path == null || path.equals("/")) ? "/index.html" : path;
+        return java.nio.file.Paths.get(target).normalize().toString().replace("\\", "/");
+    }
+    
+    /**
+     * Verifica que una ruta normalizada no intente escapar del directorio de
+     * recursos estáticos (protección contra path traversal, ej. {@code "../../etc/passwd"}).
+     *
+     * @param normalizedPath la ruta ya normalizada
+     * @return  true si la ruta es segura para servir o false en caso contrario
+     */
+    private static boolean isSafePath(String normalizedPath) {
+        return !normalizedPath.contains("..") && normalizedPath.startsWith("/");
+    }
+    
+    /**
+     * Lee el contenido binario de un recurso estático desde el classpath
+     *
+     * @param normalizedPath la ruta normalizada y validada del recurso
+     * @return los bytes del recurso, o  si el recurso no existe
+     * @throws IOException si ocurre un error al leer el recurso
+     */
+    private static byte[] readResource(String normalizedPath) throws IOException {
+        String resourcePath = RESOURCE_ROOT + normalizedPath;
         try (InputStream resourceStream = HttpServer.class.getResourceAsStream(resourcePath)) {
-            if (resourceStream == null) {
-                sendError(out, 404, "No encontrado: " + normalized);
-                return;
-            }
-            byte[] content = resourceStream.readAllBytes();
-            String contentType = contentTypeFor(normalized);
-            sendBytes(out, 200, "OK", contentType, content);
+            return resourceStream == null ? null : resourceStream.readAllBytes();
         }
     }
 
@@ -220,4 +323,12 @@ public class HttpServer {
         }
         return params;
     }
+    /**
+     * Representa una petición HTTP ya parseada: la ruta solicitada y su
+     * query string asociado (si lo tiene).
+     *
+     * @param path  la ruta de la petición 
+     * @param query el query string crudo, o null si no hay parámetros
+     */
+    private record ParsedRequest(String path, String query) {}
 }

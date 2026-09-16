@@ -14,11 +14,13 @@ import java.util.logging.Level;
 public class ServidorWebMantenible {
     
     static Map <String, WebService> webservices = new HashMap();
-
+    
+    //Registramos la ruta y su lambda
     public static void get(String route, WebService ws)
     {    
         webservices.put(route,ws);
     }
+    //Ejecutar la lambda cuando se necesite
     public static String invoke(String route)
     {
         WebService routeFind = webservices.get(route);
