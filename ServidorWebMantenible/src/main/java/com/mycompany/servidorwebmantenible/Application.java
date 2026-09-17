@@ -12,27 +12,30 @@ public class Application {
 
     public static void main(String[] args) throws Exception {
 
-        /**staticfiles("/webroot");
-
-        get("/hello", (req, resp) -> {
-            String name = req.getValue("name");
-
+        get("/pi", (request, response) -> String.valueOf(Math.PI));
+        get("/e", (request, response) -> String.valueOf(Math.E));
+        get("/hello", (request, response) -> {
+            String name = request.getValue("name");
             if (name == null || name.isBlank()) {
                 name = "world";
             }
-
-            return "Hello " + name;
-        });**/
-
-        get("/pi", () -> String.valueOf(Math.PI));
-        get("/e", () -> String.valueOf(Math.E));
-        get("/hello", () -> {
-            String message = "Hello world";
-            return message;
+            String greetingPrefix = System.getenv()
+                    .getOrDefault("GREETING_PREFIX", "Hello, ");
+            return greetingPrefix + " " + name + "!";
         });
-        System.out.println(ServidorWebMantenible.invoke("/pi"));
-        System.out.println(ServidorWebMantenible.invoke("/e"));
-        System.out.println(ServidorWebMantenible.invoke("/"));
+        
+        get("/square", (request, response) -> {
+            int number = Integer.parseInt(request.getValue("value"));
+            return String.valueOf(number * number);
+        });
+        String environment = System.getenv().getOrDefault("APP_ENV", "development");
+        
+        if(environment.equals("development")){
+            get("/shutdown", (request, response) -> {
+                ServidorWebMantenible.stop();
+                return "Server will stop after this response.";
+            });
+        }
         start();
     }
 }

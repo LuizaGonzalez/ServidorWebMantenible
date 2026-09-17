@@ -13,22 +13,28 @@ import java.util.logging.Level;
  */
 public class ServidorWebMantenible {
     
-    static Map <String, WebService> webservices = new HashMap();
+    private static final Router router = new Router();
+    private static boolean running = true;
     
     //Registramos la ruta y su lambda
     public static void get(String route, WebService ws)
     {    
-        webservices.put(route,ws);
+        router.addRoute(route,ws);
     }
     //Ejecutar la lambda cuando se necesite
-    public static String invoke(String route)
+    public static String invoke(String route, String query) 
     {
-        WebService routeFind = webservices.get(route);
-        if (routeFind == null)
-        {
-            return null;
-        }
-        return routeFind.call();
+        return router.invoke(route, query);
+    }
+    /**
+     * Marca el servidor como detenido. No interrumpe la petición actual 
+     * solo indica que el ciclo principal debe terminar después de responder.
+     */
+    public static void stop(){
+        running = false;
+    }
+    public static boolean isRunning(){
+        return running;
     }
     public static void start()
     {

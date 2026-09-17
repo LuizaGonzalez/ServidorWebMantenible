@@ -21,8 +21,8 @@ import java.util.Map;
  */
 public class HttpServer {
 
-    private static final int DEFAULT_PORT = 35000;
-    private static final String RESOURCE_ROOT = "/public";
+    private static final int DEFAULT_PORT = 8080;
+    private static final StaticFileService staticFileService = new StaticFileService();
 
     /** Puerto de entrada del servidor, resuelve el puerto que se va a usar y 
      *  acepta conexiones
@@ -34,23 +34,24 @@ public class HttpServer {
         runServer(port);
     }
     
-    /** Abre el puerto y mantiene las conexiones de clientes
-     * 
-     * @param args
-     * @return 
+    /** 
+     * Abre el puerto y mantiene las conexiones de clientes
      */
     private static void runServer(int port) throws IOException {
         ServerSocket serverSocket = new ServerSocket(port);
         System.out.println("Ready to receive on port " + port + "...");
         
-        boolean isReceiveConection = true;
-        while(isReceiveConection){
+        while(ServidorWebMantenible.isRunning()){
             try (Socket clientSocket = serverSocket.accept()){
                 handleRequest(clientSocket);
             }catch (IOException e) {
                 System.out.println("Error atendiendo una solicitud: " + e.getMessage());
+            }catch (RuntimeException e) {
+                System.out.println("Error inesperado atendiendo una solicitud: " + e.getMessage());
             }
         }
+        serverSocket.close();
+        System.out.println("Server stopped gracefully.");
     }
     
     /**Determina el puerto que usara el servidor, siguiendo la prioridad de
@@ -205,7 +206,7 @@ public class HttpServer {
      * @throws IOException si ocurre un error al escribir la respuesta
      */
     private static void route(ParsedRequest request, OutputStream out) throws IOException {
-        String result = ServidorWebMantenible.invoke(request.path());
+        String result = ServidorWebMantenible.invoke(request.path(), request.query());
 
         if (result != null) {
             sendText(out, result);
@@ -225,68 +226,14 @@ public class HttpServer {
      * @throws IOException si ocurre un error al leer el recurso o escribir la respuesta
      */
     private static void handleStaticResource(OutputStream out, String path) throws IOException {
-        String normalized = normalizePath(path);
+        StaticFileService.StaticResource resource = staticFileService.serve(path);
 
-        if (!isSafePath(normalized)) {
-            sendError(out, 400, "Ruta inválida");
-            return;
+        switch (resource.status()) {
+            case OK -> sendBytes(out, 200, "OK", resource.contentType(), resource.content());
+            case INVALID_PATH -> sendError(out, 400, "Bad Request");
+            case NOT_FOUND -> sendError(out, 404, "Not Found");
         }
-
-        byte[] content = readResource(normalized);
-        if (content == null) {
-            sendError(out, 404, "No encontrado: " + normalized);
-            return;
-        }
-
-        sendBytes(out, 200, "OK", contentTypeFor(normalized), content);
-    }
-     /**
-     * Organiza y corrige la ruta solicitada. Si el usuario pide /, la cambia 
-     * por /index.html. También elimina partes innecesarias de la ruta,
-     * como . o .., para obtener una dirección limpia y correcta.
-     *
-     * @param path la ruta original solicitada por el cliente
-     * @return la ruta normalizada, con separadores tipo 
-     */
-    private static String normalizePath(String path) {
-        String target = (path == null || path.equals("/")) ? "/index.html" : path;
-        return java.nio.file.Paths.get(target).normalize().toString().replace("\\", "/");
-    }
-    
-    /**
-     * Verifica que una ruta normalizada no intente escapar del directorio de
-     * recursos estáticos (protección contra path traversal, ej. {@code "../../etc/passwd"}).
-     *
-     * @param normalizedPath la ruta ya normalizada
-     * @return  true si la ruta es segura para servir o false en caso contrario
-     */
-    private static boolean isSafePath(String normalizedPath) {
-        return !normalizedPath.contains("..") && normalizedPath.startsWith("/");
-    }
-    
-    /**
-     * Lee el contenido binario de un recurso estático desde el classpath
-     *
-     * @param normalizedPath la ruta normalizada y validada del recurso
-     * @return los bytes del recurso, o  si el recurso no existe
-     * @throws IOException si ocurre un error al leer el recurso
-     */
-    private static byte[] readResource(String normalizedPath) throws IOException {
-        String resourcePath = RESOURCE_ROOT + normalizedPath;
-        try (InputStream resourceStream = HttpServer.class.getResourceAsStream(resourcePath)) {
-            return resourceStream == null ? null : resourceStream.readAllBytes();
-        }
-    }
-
-    static String contentTypeFor(String path) {
-        String lower = path.toLowerCase();
-        if (lower.endsWith(".html")) return "text/html; charset=UTF-8";
-        if (lower.endsWith(".js")) return "application/javascript; charset=UTF-8";
-        if (lower.endsWith(".png")) return "image/png";
-        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-        return "application/octet-stream";
-    }
-
+    } 
     //Utilidades de respuesta 
 
     private static void sendText(OutputStream out, String body) throws IOException {
@@ -294,9 +241,10 @@ public class HttpServer {
                 body.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static void sendError(OutputStream out, int code, String message) throws IOException {
-        sendBytes(out, code, message, "text/plain; charset=UTF-8",
-                message.getBytes(StandardCharsets.UTF_8));
+    private static void sendError(OutputStream out, int statusCode, String statusText) throws IOException {
+        String body = statusCode + " " + statusText;
+        sendBytes(out, statusCode, statusText, "text/plain; charset=UTF-8",
+                body.getBytes(StandardCharsets.UTF_8));
     }
 
     private static void sendBytes(OutputStream out, int statusCode, String statusText,
@@ -310,19 +258,6 @@ public class HttpServer {
         out.flush();
     }
 
-    static Map<String, String> parseQuery(String query) {
-        Map<String, String> params = new HashMap<>();
-        if (query == null || query.isEmpty()) {
-            return params;
-        }
-        for (String pair : query.split("&")) {
-            String[] kv = pair.split("=", 2);
-            String key = URLDecoder.decode(kv[0], StandardCharsets.UTF_8);
-            String value = kv.length > 1 ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : "";
-            params.put(key, value);
-        }
-        return params;
-    }
     /**
      * Representa una petición HTTP ya parseada: la ruta solicitada y su
      * query string asociado (si lo tiene).
