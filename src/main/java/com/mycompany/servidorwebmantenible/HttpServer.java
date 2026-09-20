@@ -206,12 +206,17 @@ public class HttpServer {
      * @throws IOException si ocurre un error al escribir la respuesta
      */
     private static void route(ParsedRequest request, OutputStream out) throws IOException {
-        String result = ServidorWebMantenible.invoke(request.path(), request.query());
+        try {
+            String result = ServidorWebMantenible.invoke(request.path(), request.query());
 
-        if (result != null) {
-            sendText(out, result);
-        } else {
-            handleStaticResource(out, request.path());
+            if (result != null) {
+                sendText(out, result);
+            } else {
+                handleStaticResource(out, request.path());
+            }
+        } catch (RuntimeException e) {
+            System.out.println("Error procesando la ruta " + request.path() + ": " + e.getMessage());
+            sendError(out, 400, "Bad Request");
         }
     }
     
